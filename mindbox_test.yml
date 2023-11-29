@@ -63,7 +63,7 @@ spec:
 
 ---
 apiVersion: autoscaling/v1
-kind: HorizontalPodAutoscaler # Avtoscaller для условий (5,7).
+kind: HorizontalPodAutoscaler # Autoscaler для условий (5,7).
 metadata:
   name: web-app-scaler
 spec:
