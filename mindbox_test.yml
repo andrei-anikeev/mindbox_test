@@ -1,0 +1,76 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-app
+spec:
+  replicas: 2 # Начинаем с двух реплик для обеспечения отказоустойчивости (6)
+  selector:
+    matchLabels:
+      app: web-app
+  template:
+    metadata:
+      labels:
+        app: web-app
+    spec:
+      affinity: # Эта секция дожна обеспечить распределение подов по нодам. (1,6)
+                # Во время планирования podAntiAffinity не позволит создать несколько подов на одной ноде с одинаковыми labels.
+                # Во время работы условие выполняться не будет и если поды "съедутся" на одну ноду, это не будет исправляться.
+                # Такая логика выбрана во избежание неконтролируемых переездов подов, что может привести к нестабильности в предоставлении сервиса.
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            - labelSelector:
+                matchExpressions:
+                  - key: "app"
+                    operator: In
+                    values:
+                    - web-app
+              topologyKey: "kubernetes.io/hostname" # Указываю область применения правила - на уровне отдельных нод.
+      topologySpreadConstraints: # В этой секции постарался реализовать гарантированное использование всех зон (1,6). 
+                                 # По идее "maxSkew: 1" позволит распределить поды по зонам с максимальной разницей по количеству в одну штуку,
+                                 # а "whenUnsatisfiable: ScheduleAnyway" позволит выполнить планирование даже если условие рапределения окажется невыполнимым.
+        - maxSkew: 1          
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: web-app
+          topologyKey: "topology.kubernetes.io/zone" # Указываю область применения правила - на уровне отдельных зон.
+      containers:
+      - name: web-app
+        image: web-app:latest
+        resources: # Изначально запрашивается вся процессорная мощь, после окончания начальной загрузки использование процессора понижается до половины. (4,7)
+                    # Согласно условию потребление ровное в районе 0.1 CPU, но указывать меньше 0.5 остерегся из-за опасения непредвиденных пиков.
+                    # Возможно это дискуссионный вопрос. Впрочем, как и всё остальное. :)
+          requests:
+            cpu: "1"
+            memory: "128Mi"
+          limits:
+            cpu: "0.5"
+            memory: "128Mi"
+        ports:
+        - containerPort: 8080
+        readinessProbe: # Указано время проверки готовности приложения (2)
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 12
+          periodSeconds: 5
+        livenessProbe: # Время проверки здоровья приложения (с задержкой на проверку готовности) (2)
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 17
+          periodSeconds: 5
+
+---
+apiVersion: autoscaling/v1
+kind: HorizontalPodAutoscaler # Avtoscaller для условий (5,7).
+metadata:
+  name: web-app-scaler
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-app
+  minReplicas: 2 # Минимальное количество реплик для низкой нагрузки (5,6)
+  maxReplicas: 4 # Максимальное количество реплик для пиковой нагрузки (3,5)
+  targetCPUUtilizationPercentage: 80 # Граница увеличения/уменьшения количества нод.
